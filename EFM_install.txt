@@ -1,0 +1,435 @@
+Token:
+keith.hollman@un.org	8KI06WKGzlMS8HhgaUkLyIOPUzczPqlp
+
+###############
+# Repo install
+
+curl -1sLf 'https://downloads.enterprisedb.com/8KI06WKGzlMS8HhgaUkLyIOPUzczPqlp/enterprise/setup.rpm.sh' | sudo -E bash
+dnf install yum-utils 
+rpm --import 'https://downloads.enterprisedb.com/8KI06WKGzlMS8HhgaUkLyIOPUzczPqlp/enterprise/gpg.E71EB0829F1EF813.key'
+# check:
+dnf repolist | grep enterprisedb
+dnf -q makecache -y --disablerepo='*' --enablerepo='enterprisedb-enterprise'
+
+# For EFM config & passwd stuff:
+sudo yum install java-11-openjdk
+sudo update-alternatives --config 'java'
+# Choose java 1version 1 
+java -version
+
+###############
+# Failover Manager install & config
+
+
+# Install the RHELv9 EPEL repository:
+sudo dnf -y install https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm
+sudo dnf makecache
+
+# RHEL v8 install:
+sudo dnf -y install https://dl.fedoraproject.org/pub/epel/epel-release-latest-8.noarch.rpm
+sudo dnf makecache
+
+# Install the package
+sudo dnf -y install edb-efm410
+
+# Complete EDB install:
+sudo dnf -y install edb-efm410 edb-as16-server edb-pgbouncer123
+
+Updating Subscription Management repositories.
+EPEL-8                                                                                                                                   13 kB/s | 2.3 kB     00:00
+Red Hat Enterprise Linux 8 for x86_64 - BaseOS (RPMs)                                                                                    21 kB/s | 4.1 kB     00:00
+Red Hat Satellite Client 6 for RHEL 8 x86_64 (RPMs)                                                                                      19 kB/s | 3.8 kB     00:00
+Red Hat Enterprise Linux 8 for x86_64 - AppStream (RPMs)                                                                                 22 kB/s | 4.5 kB     00:00
+Dependencies resolved.
+========================================================================================================================================================================
+ Package                               Architecture                      Version                               Repository                                          Size
+========================================================================================================================================================================
+Installing:
+ edb-efm410                            x86_64                            4.10-1.el8                            enterprisedb-enterprise                            8.9 M
+
+Transaction Summary
+========================================================================================================================================================================
+Install  1 Package
+
+Total download size: 8.9 M
+Installed size: 10 M
+Downloading Packages:
+edb-efm410-4.10-1.el8.x86_64.rpm                                                                                                        6.1 MB/s | 8.9 MB     00:01
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+Total                                                                                                                                   6.1 MB/s | 8.9 MB     00:01
+Running transaction check
+Transaction check succeeded.
+Running transaction test
+Transaction test succeeded.
+Running transaction
+  Preparing        :                                                                                                                                                 1/1
+  Running scriptlet: edb-efm410-4.10-1.el8.x86_64                                                                                                                   1/1
+  Installing       : edb-efm410-4.10-1.el8.x86_64                                                                                                                   1/1
+  Running scriptlet: edb-efm410-4.10-1.el8.x86_64                                                                                                                   1/1
+[/usr/lib/tmpfiles.d/edb-efm-4.10.conf:1] Line references path below legacy directory /var/run/, updating /var/run/efm-4.10 → /run/efm-4.10; please update the tmpfiles.d/ drop-in file accordingly.
+
+  Verifying        : edb-efm410-4.10-1.el8.x86_64                                                                                                                   1/1
+Installed products updated.
+
+Installed:
+  edb-efm410-4.10-1.el8.x86_64
+
+Complete!
+
+
+ls -lrt /etc/edb/efm-4.10/
+efm.properties.in
+efm.nodes.in
+
+ls -lrt /var/log/efm-4.10/
+total 0
+
+cd /etc/edb/efm-4.10/
+cp efm.properties.in efm.properties
+cp efm.nodes.in efm.nodes
+chmod 666 efm.properties
+chmod 666 efm.nodes
+
+echo -e "*:*:*:postgres:secret" | sudo -u postgres tee /var/lib/pgsql/.pgpass; sudo chmod 0600 /var/lib/pgsql/.pgpass
+
+# On host dbgsc-r-db-01 (10.128.136.59)
+vi efm.properties
+db.user=postgres
+db.password.encrypted=cae947837a0dbe0a33751f5c16749fff
+db.port=3306
+db.database=postgres
+db.service.owner=postgres
+db.service.name=postgresql-16
+db.bin=/usr/pgsql-16/bin
+db.data.dir=/var/lib/pgsql/16/data
+db.config.dir=/var/lib/pgsql/16/data
+user.email=keith.hollman@un.org
+from.email=dbgsc-r-db-01@global.un.org
+bind.address=10.128.136.59:3308
+#admin.port=7809
+admin.port=3309
+is.witness=false
+auto.allow.hosts=false
+#auto.allow.hosts=true
+efm.loglevel=TRACE
+
+systemctl start edb-efm-4.10
+
+# Add standby and witness node ip in allow-node list:
+/usr/edb/efm-4.10/bin/efm allow-node efm 10.128.136.58
+/usr/edb/efm-4.10/bin/efm allow-node efm 10.128.136.60
+
+/usr/edb/efm-4.10/bin/efm cluster-status efm
+Cluster Status: efm
+
+        Agent Type  Address              DB       VIP
+        ----------------------------------------------------------------
+        Primary     10.128.136.59        UP
+
+Allowed node host list:
+        10.128.136.59 10.128.136.58:3306 10.128.136.60:3306
+
+Membership coordinator: 10.128.136.59
+
+Standby priority host list:
+        (List is empty.)
+
+Promote Status:
+
+        DB Type     Address              WAL Received LSN   WAL Replayed LSN   Info
+        ---------------------------------------------------------------------------
+        Primary     10.128.136.59                           0/170001C0
+
+        No standby databases were found.
+
+
+############################################
+# Install & configure EFM on standby node:
+
+cd /etc/edb/efm-4.10/
+cp efm.properties.in efm.properties
+cp efm.nodes.in efm.nodes
+chmod 666 efm.properties
+chmod 666 efm.nodes
+
+echo -e "*:*:*:postgres:secret" | sudo -u postgres tee /var/lib/pgsql/.pgpass; sudo chmod 0600 /var/lib/pgsql/.pgpass
+
+# On host dbgsc-r-db-02 (10.128.136.60)
+# "bind.address" is the only value that needs adjusting for each new server:
+vi efm.properties
+db.user=postgres
+db.password.encrypted=cae947837a0dbe0a33751f5c16749fff
+db.port=3306
+db.database=postgres
+db.service.owner=postgres
+db.service.name=postgresql-16
+db.bin=/usr/pgsql-16/bin
+db.data.dir=/var/lib/pgsql/16/data
+db.config.dir=/var/lib/pgsql/16/data
+user.email=keith.hollman@un.org
+from.email=dbgsc-r-db-02@global.un.org
+bind.address=10.128.136.60:3308
+#admin.port=7809
+admin.port=3309
+is.witness=false
+auto.allow.hosts=false
+#auto.allow.hosts=true
+efm.loglevel=TRACE
+
+# Now add the nodes to the efm.nodes file:
+vi efm.nodes
+ 10.128.136.59:3308 10.128.136.58:3308
+
+systemctl start edb-efm-4.10
+/usr/edb/efm-4.10/bin/efm cluster-status efm
+
+Cluster Status: efm
+
+        Agent Type  Address              DB       VIP
+        ----------------------------------------------------------------
+        Primary     10.128.136.59        UP
+        Standby     10.128.136.60        UP
+
+Allowed node host list:
+        10.128.136.59 10.128.136.60 10.128.136.58
+
+Membership coordinator: 10.128.136.59
+
+Standby priority host list:
+        10.128.136.60
+
+Promote Status:
+
+        DB Type     Address              WAL Received LSN   WAL Replayed LSN   Info
+        ---------------------------------------------------------------------------
+        Primary     10.128.136.59                           0/170001C0
+        Standby     10.128.136.60        0/17000000         0/170001C0
+
+        Standby database(s) in sync with primary. It is safe to promote.
+
+
+############################################
+# Install & configure EFM on 2nd standby node:
+cd /etc/edb/efm-4.10/
+cp efm.properties.in efm.properties
+cp efm.nodes.in efm.nodes
+chmod 666 efm.properties
+chmod 666 efm.nodes
+
+echo -e "*:*:*:postgres:secret" | sudo -u postgres tee /var/lib/pgsql/.pgpass; sudo chmod 0600 /var/lib/pgsql/.pgpass
+
+# On host dbgsc-r-db-03 (10.128.136.58)
+# "bind.address" is the only value that needs adjusting for each new server:
+
+vi efm.properties
+db.user=postgres
+db.password.encrypted=cae947837a0dbe0a33751f5c16749fff
+db.port=3306
+db.database=postgres
+db.service.owner=postgres
+db.service.name=postgresql-16
+db.bin=/usr/pgsql-16/bin
+db.data.dir=/var/lib/pgsql/16/data
+db.config.dir=/var/lib/pgsql/16/data
+user.email=keith.hollman@un.org
+from.email=dbgsc-r-db-03@global.un.org
+bind.address=10.128.136.58:3308
+#admin.port=7809
+admin.port=3309
+is.witness=false
+auto.allow.hosts=false
+#auto.allow.hosts=true
+efm.loglevel=TRACE
+
+# Now add the nodes to the efm.nodes file:
+vi efm.nodes
+ 10.128.136.59:3308 10.128.136.60:3308
+
+systemctl start edb-efm-4.10
+/usr/edb/efm-4.10/bin/efm cluster-status efm
+
+Cluster Status: efm
+
+        Agent Type  Address              DB       VIP
+        ----------------------------------------------------------------
+        Standby     10.128.136.58        UP
+        Primary     10.128.136.59        UP
+        Standby     10.128.136.60        UP
+
+Allowed node host list:
+        10.128.136.59 10.128.136.60 10.128.136.58
+
+Membership coordinator: 10.128.136.59
+
+Standby priority host list:
+        10.128.136.60 10.128.136.58
+
+Promote Status:
+
+        DB Type     Address              WAL Received LSN   WAL Replayed LSN   Info
+        ---------------------------------------------------------------------------
+        Primary     10.128.136.59                           0/170001C0
+        Standby     10.128.136.58        0/17000000         0/170001C0
+        Standby     10.128.136.60        0/17000000         0/170001C0
+
+        Standby database(s) in sync with primary. It is safe to promote.
+
+
+# Halt the Primary, and observe:
+
+[root@dbgsc-r-db-01 edb]# systemctl stop postgresql-16.service
+[root@dbgsc-r-db-01 edb]# /usr/edb/efm-4.10/bin/efm cluster-status efm
+Cluster Status: efm
+
+        Agent Type  Address              DB       VIP
+        ----------------------------------------------------------------
+        Standby     10.128.136.58        UP
+        Primary     10.128.136.59        UP
+        Standby     10.128.136.60        UP
+
+Allowed node host list:
+        10.128.136.59 10.128.136.58 10.128.136.60
+
+Membership coordinator: 10.128.136.59
+
+Standby priority host list:
+        10.128.136.58 10.128.136.60
+
+Promote Status:
+
+        DB Type     Address              WAL Received LSN   WAL Replayed LSN   Info
+        ---------------------------------------------------------------------------
+        Standby     10.128.136.58        0/190000A0         0/190000A0
+        UNKNOWN     10.128.136.59        UNKNOWN            UNKNOWN            Connection to 10.128.136.59:3306 refused. Check that the hostname and port are correct and that the postmaster is accepting TCP/IP connections.
+        Standby     10.128.136.60        0/190000A0         0/190000A0
+
+        No primary database was found.
+[root@dbgsc-r-db-01 edb]# /usr/edb/efm-4.10/bin/efm cluster-status efm
+Cluster Status: efm
+
+        Agent Type  Address              DB       VIP
+        ----------------------------------------------------------------
+        Standby     10.128.136.58        UP
+        Primary     10.128.136.59        UP
+        Standby     10.128.136.60        UP
+
+Allowed node host list:
+        10.128.136.59 10.128.136.58 10.128.136.60
+
+Membership coordinator: 10.128.136.59
+
+Standby priority host list:
+        10.128.136.58 10.128.136.60
+
+Promote Status:
+
+        DB Type     Address              WAL Received LSN   WAL Replayed LSN   Info
+        ---------------------------------------------------------------------------
+        Standby     10.128.136.58        0/190000A0         0/190000A0
+        UNKNOWN     10.128.136.59        UNKNOWN            UNKNOWN            Connection to 10.128.136.59:3306 refused. Check that the hostname and port are correct and that the postmaster is accepting TCP/IP connections.
+        Standby     10.128.136.60        0/190000A0         0/190000A0
+
+        No primary database was found.
+[root@dbgsc-r-db-01 edb]#
+[root@dbgsc-r-db-01 edb]# /usr/edb/efm-4.10/bin/efm cluster-status efm
+Cluster Status: efm
+
+        Agent Type  Address              DB       VIP
+        ----------------------------------------------------------------
+        Standby     10.128.136.58        UP
+        Primary     10.128.136.59        UP
+        Standby     10.128.136.60        UP
+
+Allowed node host list:
+        10.128.136.59 10.128.136.58 10.128.136.60
+
+Membership coordinator: 10.128.136.59
+
+Standby priority host list:
+        10.128.136.58 10.128.136.60
+
+Promote Status:
+
+        DB Type     Address              WAL Received LSN   WAL Replayed LSN   Info
+        ---------------------------------------------------------------------------
+        Standby     10.128.136.58        0/190000A0         0/190000A0
+        UNKNOWN     10.128.136.59        UNKNOWN            UNKNOWN            Connection to 10.128.136.59:3306 refused. Check that the hostname and port are correct and that the postmaster is accepting TCP/IP connections.
+        Standby     10.128.136.60        0/190000A0         0/190000A0
+
+        No primary database was found.
+[root@dbgsc-r-db-01 edb]# /usr/edb/efm-4.10/bin/efm cluster-status efm
+Cluster Status: efm
+
+        Agent Type  Address              DB       VIP
+        ----------------------------------------------------------------
+        Primary     10.128.136.58        UP
+        Idle        10.128.136.59        UNKNOWN
+        Standby     10.128.136.60        DOWN
+
+Allowed node host list:
+        10.128.136.59 10.128.136.58 10.128.136.60
+
+Membership coordinator: 10.128.136.59
+
+Standby priority host list:
+        10.128.136.60
+
+Promote Status:
+
+        DB Type     Address              WAL Received LSN   WAL Replayed LSN   Info
+        ---------------------------------------------------------------------------
+        Primary     10.128.136.58                           0/190001F0
+        UNKNOWN     10.128.136.60        UNKNOWN            UNKNOWN            FATAL: the database system is starting up
+
+        One or more standby databases are not in sync with the primary database. The following node(s) returned a WAL LSN that does not match the primary: 10.128.136.60
+
+Idle Node Status (idle nodes ignored in WAL LSN comparisons):
+
+        Address              WAL Received LSN   WAL Replayed LSN   Info
+        ---------------------------------------------------------------
+        10.128.136.59        UNKNOWN            UNKNOWN            Connection to 10.128.136.59:3306 refused. Check that the hostname and port are correct and that the postmaster is accepting TCP/IP connections.
+[root@dbgsc-r-db-01 edb]# /usr/edb/efm-4.10/bin/efm cluster-status efm
+Cluster Status: efm
+
+        Agent Type  Address              DB       VIP
+        ----------------------------------------------------------------
+        Primary     10.128.136.58        UP
+        Idle        10.128.136.59        UNKNOWN
+        Standby     10.128.136.60        DOWN
+
+Allowed node host list:
+        10.128.136.59 10.128.136.58 10.128.136.60
+
+Membership coordinator: 10.128.136.59
+
+Standby priority host list:
+        10.128.136.60
+
+Promote Status:
+
+        DB Type     Address              WAL Received LSN   WAL Replayed LSN   Info
+        ---------------------------------------------------------------------------
+        Primary     10.128.136.58                           0/190001F0
+        UNKNOWN     10.128.136.60        UNKNOWN            UNKNOWN            FATAL: the database system is starting up
+
+        One or more standby databases are not in sync with the primary database. The following node(s) returned a WAL LSN that does not match the primary: 10.128.136.60
+
+Idle Node Status (idle nodes ignored in WAL LSN comparisons):
+
+        Address              WAL Received LSN   WAL Replayed LSN   Info
+        ---------------------------------------------------------------
+        10.128.136.59        UNKNOWN            UNKNOWN            Connection to 10.128.136.59:3306 refused. Check that the hostname and port are correct and that the postmaster is accepting TCP/IP connections.
+[root@dbgsc-r-db-01 edb]#
+
+
+# On all nodes to ensure correct failover behaviour:
+
+vi /etc/edb/efm-4.10/efm.properties
+ primary.shutdown.as.failure=true
+ enable.stop.cluster=false
+
+systemctl edit postgresql-16.service
+
+[Unit]
+BindsTo=edb-efm-4.10.service
+

@@ -1,0 +1,80 @@
+
+https://www.pgpool.net/docs/latest/en/html/index.html
+
+https://www.pgpool.net/docs/latest/en/html/planning.html#PLANNING-POSTGRESQL
+
+# With Postgres-16 already installed:
+
+vi /etc/yum.repos.d/pgdg-redhat-all.repo
+
+[pgdg-common]
+...
+exclude=pgpool*
+
+[pgdg16]
+...
+exclude=pgpool*
+
+[pgdg15]
+...
+exclude=pgpool*
+
+[pgdg14]
+...
+exclude=pgpool*
+
+[pgdg13]
+...
+exclude=pgpool*
+
+[pgdg12]
+...
+exclude=pgpool*
+
+[pgdg11]
+...
+exclude=pgpool*
+
+
+dnf install -y https://www.pgpool.net/yum/rpms/4.5/redhat/rhel-8-x86_64/pgpool-II-release-4.5-1.noarch.rpm
+dnf install -y pgpool-II-pg16-*
+
+# Make some postgresql.conf changes:
+
+vi $PGDATA/postgresql.conf
+
+listen_addresses = '*'
+archive_mode = on
+archive_command = 'cp "%p" "/var/lib/pgsql/archivedir/%f"'
+max_wal_senders = 10
+max_replication_slots = 10
+wal_level = replica
+hot_standby = on
+wal_log_hints = on
+
+alter system set max_wal_senders = 10;
+alter system set wal_log_hints = on ;
+select pg_reload_conf();
+sudo -iu postgres pg_6ctl -D $PGDATA restart -mf
+
+show wal_log_hints ;
+show max_wal_senders ;
+
+# Add pgpool users (replicator already exists)
+
+CREATE ROLE pgpool WITH LOGIN;
+\password pgpool
+GRANT pg_monitor TO pgpool;
+
+# Add pgpool to pg_hba.conf:
+echo -e "host all pgpool 10.128.136.*/21 trust" | sudo -u postgres tee -a /var/lib/pgsql/16/data/pg_hba.conf >/dev/null
+
+# ssh across machines for pgpool
+su - postgres
+mkdir ~/.ssh
+chmod 700 ~/.ssh
+cd ~/.ssh
+ssh-keygen -t rsa -f id_rsa_pgpool
+
+Then add the public key id_rsa_pgpool.pub to /var/lib/pgsql/.ssh/authorized_keys file on each server.
+

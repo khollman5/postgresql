@@ -1,0 +1,88 @@
+https://www.linkedin.com/pulse/efficient-postgresql-management-complete-guide-installing-configuring-rxkzc/
+
+##################################
+# Installing PgBouncer
+sudo yum install -y pgbouncer
+
+
+##################################
+# Configure Connection Settings:
+
+vi /etc/pgbouncer/pgbouncer.ini
+ [databases]
+ #your_database_name = host=127.0.0.1 port=5432 dbname=your_database_name
+ postgres = host=10.128.136.59 port=3306 dbname=postgres
+
+ [pgbouncer]
+ listen_addr = 10.128.136.59
+ listen_port = 3307
+
+# Configure Authentication:
+ auth_type = md5
+ auth_file = /etc/pgbouncer/userlist.txt
+
+vi /etc/pgbouncer/userlist.txt
+	"username" "password"
+	"postgres" "secret"
+
+ pool_mode = session
+ max_client_conn = 100
+ default_pool_size = 20
+ peer_id = 1
+ # on 2nd node:
+ peer_id = 2
+ # on 3rd node:
+ peer_id = 3
+ application_name_add_host = 1
+ 
+
+# Make sure the password is set and ok:
+psql -c "alter user postgres with password 'secret'" -c "select pg_reload_conf()"
+systemctl restart pgbouncer
+systemctl status pgbouncer
+
+
+# Test it out!
+# from localhost:
+psql -h dbgsc-r-db-01 -p 3307 postgres -c "\conninfo"
+# from a replica:
+psql -h dbgsc-r-db-01 -p 3307 postgres -c "\conninfo"
+
+[root@dbgsc-r-db-02 data]# psql -h dbgsc-r-db-01 -p 3307 postgres -c "\conninfo"
+Password for user postgres:
+You are connected to database "postgres" as user "postgres" on host "dbgsc-r-db-01" (address "10.128.136.59") at port "3307".
+
+psql -h dbgsc-r-db-03 -p 3307 postgres -c "\conninfo"
+psql -h dbgsc-r-db-02 -p 3307 postgres -c "\conninfo"
+
+
+psql -h dbgsc-r-db-01  -p 3307 -U postgres pgbouncer
+
+psql -h dbgsc-r-db-01  -p 3307 -U postgres pgbouncer -c "\x show stats"
+
+psql -h dbgsc-r-db-01  -p 3307 -U postgres pgbouncer -c "show mem" -c "\x show clients" -c "SHOW SERVERS" -c "\x SHOW POOLS" -c "\x SHOW LISTS" -c "SHOW USERS" -c "SHOW DATABASES" -c "SHOW FDS" -c "SHOW CONFIG" -c "SHOW STATE"
+
+SHOW STATS_AVERAGES ;
+SHOW TOTALS ;
+
+PAUSE
+	Use the PAUSE command to disconnect all servers after waiting for current queries to complete.
+SUSPEND
+	Use the SUSPEND command to flush the socket buffers and suspend the EDB PgBouncer process.
+RESUME
+	Use the RESUME command to resume work after a PAUSE or SUSPEND command.
+SHUTDOWN
+	Use the SHUTDOWN command to stop the EDB PgBouncer process and exit.
+RELOAD
+	Use the RELOAD command to reload the EDB PgBouncer configuration files.
+
+
+/etc/pgbouncer/pgbouncer.ini
+
+[root@dbgsc-r-db-02 pgsql-16]# pgbouncer --version
+PgBouncer 1.23.1
+libevent 2.1.8-stable
+adns: evdns2
+tls: OpenSSL 1.1.1k  FIPS 25 Mar 2021
+systemd: yes
+

@@ -1,0 +1,32 @@
+
+https://enterprisedb.com/docs/pgbouncer/latest/installing/linux_x86_64/pgbouncer_rhel_8/
+
+sudo dnf -y install edb-pgbouncer123
+
+
+vi /etc/edb/pgbouncer1.23/edb-pgbouncer-1.23.ini
+
+ postgres = host=10.128.136.59 port=3306 dbname=postgres
+
+ [pgbouncer]
+ listen_addr = 10.128.136.59
+ listen_port = 3307
+
+# Configure Authentication:
+ auth_type = md5
+ auth_file = /etc/pgbouncer/userlist.txt
+ 
+ pool_mode = session
+ max_client_conn = 100
+ default_pool_size = 20
+ peer_id = 1
+ # on 2nd node:
+ peer_id = 2
+ # on 3rd node:
+ peer_id = 3
+ application_name_add_host = 1
+ 
+
+systemctl start edb-pgbouncer-1.23
+systemctl status edb-pgbouncer-1.23
+

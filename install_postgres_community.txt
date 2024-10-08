@@ -1,0 +1,122 @@
+# Remove Enterprise binaries:
+yum repolist
+yum-config-manager --disable enterprisedb-enterprise enterprisedb-enterprise-noarch enterprisedb-enterprise-source enterprisedb-postgres_distributed enterprisedb-postgres_distributed-noarch enterprisedb-postgres_distributed-source
+yum repolist
+
+
+systemctl stop postgres-16
+repoquery --installed | grep edb
+yum remove edb-as16-server-* postgresql16-server edb-bdr5-pg16 edb-pgd5-proxy edb-pgd5-cli
+
+rm -rf /etc/edb /opt/EDB /opt/2ndQuadrant /var/lib/edb /var/lib/pgsql /var/log/edb/as16/
+
+
+/var/lib/alternatives/enterprisedb-edbwrap
+
+
+# Install the repository RPM:
+sudo dnf install -y https://download.postgresql.org/pub/repos/yum/reporpms/EL-8-x86_64/pgdg-redhat-repo-latest.noarch.rpm
+
+# Disable the built-in PostgreSQL module:
+sudo dnf -qy module disable postgresql
+
+# Install PostgreSQL:
+sudo dnf install -y postgresql16-server
+
+# Configuring *PGD* repositories
+curl -1sLf "https://downloads.enterprisedb.com/$EDB_SUBSCRIPTION_TOKEN/postgres_distributed/setup.rpm.sh" | sudo -E bash
+
+(dnf list *bdr*)
+dnf -y install edb-bdr5-pg16 edb-pgd5-proxy edb-pgd5-cli
+systemctl status postgresql-16
+
+# Optionally initialize the database and enable automatic start:
+#sudo /usr/pgsql-16/bin/postgresql-16-setup initdb
+sudo PGSETUP_INITDB_OPTIONS="-E UTF-8" /usr/pgsql-16/bin/postgresql-16-setup initdb
+
+#dnf config-manager --enable pgdg-rhel8-extras
+
+/var/lib/pgsql/16/data/
+
+vi /var/lib/pgsql/16/data/postgresql.conf
+ port = 3306
+
+vi $HOME/.bash_profile
+PATH=$PATH:$HOME/bin:/usr/pgsql-16/bin
+ alias pgd='sudo -iu postgres pgd'
+ alias psql='sudo -iu postgres psql'
+source $HOME/.bash_profile
+
+sudo systemctl enable postgresql-16
+sudo systemctl start postgresql-16
+
+
+############
+# BDR Config
+
+# echo -e "shared_preload_libraries = '\$libdir/bdr,\$libdir/dbms_pipe,\$libdir/edb_gen,\$libdir/dbms_aq'" | sudo -u postgres tee -a /var/lib/pgsql/16/data/postgresql.conf >/dev/null
+echo -e "shared_preload_libraries = '\$libdir/bdr'" | sudo -u postgres tee -a /var/lib/pgsql/16/data/postgresql.conf >/dev/null
+
+# Set the wal_level
+echo -e "wal_level = 'logical'" | sudo -u postgres tee -a /var/lib/pgsql/16/data/postgresql.conf >/dev/null
+
+# BDR extension also needs the commit timestamp tracking enabled
+echo -e "track_commit_timestamp = 'on'" | sudo -u postgres tee -a /var/lib/pgsql/16/data/postgresql.conf >/dev/null
+
+# Increase max worker procs
+echo -e "max_worker_processes = '16'" | sudo -u postgres tee -a /var/lib/pgsql/16/data/postgresql.conf >/dev/null
+
+# Set passwd
+sudo -u postgres psql -p3306 -c "ALTER USER postgres WITH PASSWORD 'secret'"
+
+#HBA
+echo -e "host all all all md5\nhost replication all all md5" | sudo tee -a /var/lib/pgsql/16/data/pg_hba.conf
+
+# Enable authentication between nodes
+echo -e "*:*:*:postgres:secret" | sudo -u postgres tee /var/lib/pgsql/.pgpass; sudo chmod 0600 /var/lib/pgsql/.pgpass
+
+# Restart the server
+sudo systemctl restart postgresql-16
+
+sudo -u postgres psql -p3306 -c "select * from pg_available_extensions where name like 'bdr'"
+
+sudo -u postgres psql -p3306  -c "CREATE DATABASE bdrdb"
+sudo -u postgres psql -p3306 bdrdb -c "CREATE EXTENSION bdr"
+
+sudo -u postgres psql -p3306 bdrdb
+
+bdrdb=# \dx
+
+###########
+# Create the cluster
+
+# create first node:
+ssh dbgsc-r-db-01
+sudo -u postgres psql -p3306  bdrdb
+select bdr.create_node('node-one','host=dbgsc-r-db-02 dbname=bdrdb port=3306');
+# check:
+	select * from bdr.node ;
+
+# create top level group
+select bdr.create_node_group('pgd');
+# check:
+	select * from bdr.node_group ;
+	select * from bdr.node_group_config ;
+
+# create a subgroup to allow PGD proxy and future growth
+select bdr.create_node_group('bds','pgd');
+# check:
+	select * from bdr.node_group_summary;
+
+# On second node:
+ssh dbgsc-r-db-03
+sudo -u postgres psql -p3306  bdrdb
+select bdr.create_node('node-two','host=dbgsc-r-db-03 dbname=bdrdb port=3306');
+# check:
+	select * from bdr.node ;
+
+# Join the second node to the cluster:
+select bdr.join_node_group('host=dbgsc-r-db-02 dbname=bdrdb port=3306','bds');
+# Check:
+	# On node1 and/or node2:
+	select * from bdr.group_subscription_summary;

@@ -1,0 +1,517 @@
+
+https://www.postgresql.org/docs/current/warm-standby.html#STREAMING-REPLICATION
+
+
+############
+# Install
+
+# Install the repository RPM:
+sudo dnf install -y https://download.postgresql.org/pub/repos/yum/reporpms/EL-8-x86_64/pgdg-redhat-repo-latest.noarch.rpm
+
+# Disable the built-in PostgreSQL module:
+sudo dnf -qy module disable postgresql
+
+# Install PostgreSQL:
+sudo dnf install -y postgresql16-server
+
+# Optionally initialize the database and enable automatic start:
+#sudo /usr/pgsql-16/bin/postgresql-16-setup initdb
+sudo PGSETUP_INITDB_OPTIONS="-E UTF-8" /usr/pgsql-16/bin/postgresql-16-setup initdb
+
+#dnf config-manager --enable pgdg-rhel8-extras
+
+vi /var/lib/pgsql/16/data/postgresql.conf
+ port = 3306
+
+# As root:
+vi $HOME/.bash_profile
+PATH=$PATH:$HOME/bin:/usr/pgsql-16/bin
+ alias pgd='sudo -iu postgres pgd'
+ alias psql='sudo -iu postgres psql'
+source $HOME/.bash_profile
+
+sudo systemctl enable postgresql-16
+sudo systemctl start postgresql-16
+
+export PGDATA=/var/lib/pgsql/16/data
+echo $PGDATA
+
+psql
+ CREATE TABLE quicktest ( id SERIAL PRIMARY KEY, value INT ); 
+ INSERT INTO quicktest (value) SELECT random()*10000 FROM generate_series(1,10000);
+# check:
+ select COUNT(*),SUM(value) from quicktest;
+
+# As postgres OS user "postgres":
+sudo -iu postgres
+vi /var/lib/pgsql/.pgsql_profile
+ PATH=$PATH:$HOME/bin:/usr/pgsql-16/bin
+ export PATH
+
+############
+# Configure Streaming Rep
+
+With streaming replication, archive_timeout is not required to reduce the data loss window.
+
+
+# On Primary:
+CREATE USER replicator
+WITH REPLICATION
+ENCRYPTED PASSWORD 'replicator';
+
+mkdir /opt/mysql/pg_archive
+chown postgres:postgres /opt/mysql/pg_archive
+chown postgres:postgres $PGDATA/recovery.conf
+
+psql
+--ALTER SYSTEM SET wal_level TO 'hot_standby'; # Not Needed in v16.4
+ALTER SYSTEM SET archive_mode TO 'ON';
+ALTER SYSTEM SET max_wal_senders TO '5';
+ALTER SYSTEM SET wal_keep_segments TO '10';
+ALTER SYSTEM SET listen_addresses TO '*';
+ALTER SYSTEM SET hot_standby TO 'ON';
+ALTER SYSTEM SET archive_command TO 'test ! -f /opt/mysql/pg_archive/%f && cp %p /opt/mysql/pg_archive/%f';
+
+select pg_reload_conf();
+
+show wal_level;
+show archive_mode;
+
+pg_ctl -D /var/lib/pgsql/16/data restart -mf
+# systemctl restart postgresql-16
+sudo -iu postgres pg_ctl -D /var/lib/pgsql/16/data status -mf
+
+
+# Get IP from slave
+ip a
+10.128.136.60/21
+
+# Back on Primary
+# Update the pg_hba.conf file:
+echo -e "host replication replicator 10.128.136.60/21 md5" | sudo -u postgres tee -a /var/lib/pgsql/16/data/pg_hba.conf >/dev/null
+# should look like:
+ # IPv4 local connections:
+ host    all             all             127.0.0.1/32            scram-sha-256
+ host    all             postgres        10.128.136.60/21                trust
+ host    all             postgres        10.128.136.59/21                trust
+ host    all             postgres        10.128.136.58/21                trust
+ # IPv6 local connections:
+ host    all             all             ::1/128                 scram-sha-256
+ # Allow replication connections from localhost, by a user with the
+ # replication privilege.
+ local   replication     all                                     peer
+ host    replication     all             127.0.0.1/32            scram-sha-256
+ host    replication     all             ::1/128                 scram-sha-256
+ host    replication     replicator      10.128.136.60/21                md5
+
+
+
+
+sudo -iu postgres pg_ctl -D /var/lib/pgsql/16/data reload
+ or
+sudo -iu postgres psql -U postgres -p 3306 -c "select pg_reload_conf()"
+
+psql -c "\l"
+psql -c "\dn *"
+psql -c "select COUNT(*),SUM(value) from quicktest"
+
+############
+# Copy data to replica
+
+# Get Primary IP address:
+ip a
+10.128.136.59/21
+
+# On Replica:
+sudo -ui postgres pg_basebackup -h 10.128.136.59 -U replicator -p 3306 -D /var/lib/pgsql/16/data -Xs -R -P 
+Password:  replicator
+
+vi $PGDATA/standby.signal
+# In v16.4 recovery.conf no longer applies, so we use "standby.signal".
+ primary_conninfo = 'host=10.128.136.59 port=3306 user=replicator password=replicator'
+ restore_command = 'cp /opt/mysql/pg_archive/%f %p'
+ archive_cleanup_command = 'pg_archivecleanup /opt/mysql/pg_archive %r'
+
+vi $PGDATA/postgres.conf
+ primary_conninfo = 'host=10.128.136.59 port=3306 user=replicator password=replicator' 
+
+mkdir /opt/mysql/pg_archive
+chown postgres:postgres /opt/mysql/pg_archive
+chown postgres:postgres $PGDATA/recovery.conf
+
+############
+# Start restored replica env:
+sudo -iu postgres pg_ctl -D $PGDATA start
+
+# Check replication:
+# On Primary:
+psql
+ INSERT INTO quicktest (value) SELECT random()*10000 FROM generate_series(1,10000);
+# check on Replica:
+ select COUNT(*),SUM(value) from quicktest;
+
+############
+# Monitoring:
+https://www.postgresql.org/docs/current/monitoring-ps.html
+
+# On Primary:
+psql -c "select pg_current_wal_lsn()"
+
+postgres=# select pg_current_wal_lsn();
+ pg_current_wal_lsn
+--------------------
+ 0/1114D778
+(1 row)
+
+[root@dbgsc-r-db-01 ~]# ps auxww | grep ^postgres
+postgres   66992  0.0  0.6 289340 24952 ?        Ss   Aug29   0:01 /usr/pgsql-16/bin/postgres -D /var/lib/pgsql/16/data/
+postgres   66994  0.0  0.1 143492  6844 ?        Ss   Aug29   0:00 postgres: logger
+postgres   66997  0.0  0.2 289472  9976 ?        Ss   Aug29   0:00 postgres: checkpointer
+postgres   66998  0.0  0.2 289492  8588 ?        Ss   Aug29   0:00 postgres: background writer
+postgres   67000  0.0  0.3 289472 11572 ?        Ss   Aug29   0:00 postgres: walwriter
+postgres   67001  0.0  0.2 290932 10108 ?        Ss   Aug29   0:00 postgres: autovacuum launcher
+postgres   67002  0.0  0.2 289456  8124 ?        Ss   Aug29   0:00 postgres: archiver
+postgres   67003  0.0  0.2 290920  9012 ?        Ss   Aug29   0:00 postgres: logical replication launcher
+postgres   84157  0.0  0.3 291552 12372 ?        Ss   09:23   0:00 postgres: walsender replicator 10.128.136.60(38316) streaming 0/1114D778
+
+
+# On Replica:
+psql -c "select pg_last_wal_receive_lsn()"
+
+[root@dbgsc-r-db-02 pgsql]# psql -c "select pg_last_wal_receive_lsn()"
+ pg_last_wal_receive_lsn
+-------------------------
+ 0/1114D778
+(1 row)
+
+[root@dbgsc-r-db-02 pgsql]# ps auxww | grep ^postgres
+postgres   13449  0.0  0.6 289340 24992 ?        Ss   07:50   0:00 /usr/pgsql-16/bin/postgres -D /var/lib/pgsql/16/data
+postgres   13450  0.0  0.1 143492  5460 ?        Ss   07:50   0:00 postgres: logger
+postgres   13453  0.0  0.2 289472  8380 ?        Ss   07:50   0:00 postgres: checkpointer
+postgres   13454  0.0  0.1 289340  6048 ?        Ss   07:50   0:00 postgres: background writer
+postgres   13455  0.0  0.2 290092 10704 ?        Ss   07:50   0:00 postgres: startup recovering 000000010000000000000011
+postgres   13579  0.0  0.3 301220 12220 ?        Ss   09:23   0:00 postgres: walreceiver
+
+
+############
+# Configure Slots on Primary:
+
+select primary_slot_name = 'node_a_slot';
+SELECT slot_name, slot_type, active FROM pg_replication_slots;
+
+# Tell Standby / replica to use it:
+alter system set primary_slot_name = 'node_a_slot';
+select pg_reload_conf();
+
+# On relica tell it where to find the archived WALs:
+
+ALTER SYSTEM SET restore_command = 'cp /opt/mysql/pg_archive/%f %p';
+select pg_reload_conf();
+
+
+show restore_command;
+        restore_command
+--------------------------------
+ cp /opt/mysql/pg_archive/%f %p
+(1 row)
+
+############
+# Check WAL directory location
+
+# On Primary:
+ls -lrt $PGDATA/pg_wal
+ls -lrt $PGDATA/pg_wal/archive_status
+
+# On Replica:
+ls -lrt $PGDATA/pg_wal/
+
+
+############
+# Validate that postgresql replication is setup
+
+# On Primary:
+[root@dbgsc-r-db-01 ~]# ps -eaf | grep sender
+postgres   87744   66992  0 12:56 ?        00:00:00 postgres: walsender replicator 10.128.136.60(60328) streaming 0/11525870
+
+(Remeber: you'll see the same ID here as 'psql -c "select pg_current_wal_lsn()" ')
+
+# On Replica:
+ps -eaf | egrep "receiver|startup"
+
+[root@dbgsc-r-db-02 data]# ps -eaf | egrep "receiver|startup"
+postgres   13455   13449  0 07:50 ?        00:00:00 postgres: startup recovering 000000010000000000000011
+postgres   14156   13449  0 12:56 ?        00:00:00 postgres: walreceiver streaming 0/11525870
+
+############
+# On the Primary, check replication statistics:
+psql
+ \x
+Expanded display is on.
+
+postgres=# select * from pg_stat_replication;
+-[ RECORD 1 ]----+------------------------------
+pid              | 87744
+usesysid         | 16395
+usename          | replicator
+application_name | walreceiver
+client_addr      | 10.128.136.60
+client_hostname  |
+client_port      | 60328
+backend_start    | 2024-08-30 12:56:23.595062+00
+backend_xmin     |
+state            | streaming
+sent_lsn         | 0/11525870
+write_lsn        | 0/11525870
+flush_lsn        | 0/11525870
+replay_lsn       | 0/11525870
+write_lag        |
+flush_lag        |
+replay_lag       |
+sync_priority    | 0
+sync_state       | async
+reply_time       | 2024-08-30 13:37:49.002507+00
+
+
+
+psql "dbname=postgres replication=database" -c "IDENTIFY_SYSTEM;"
+# On Primary:
+[root@dbgsc-r-db-01 ~]# psql "dbname=postgres replication=database" -c "IDENTIFY_SYSTEM;"
+      systemid       | timeline |  xlogpos   |  dbname
+---------------------+----------+------------+----------
+ 7408525321258872213 |        1 | 0/11525870 | postgres
+(1 row)
+
+
+# On replica:
+[root@dbgsc-r-db-02 data]# psql "dbname=postgres replication=database" -c "IDENTIFY_SYSTEM;"
+      systemid       | timeline |  xlogpos   |  dbname
+---------------------+----------+------------+----------
+ 7408525321258872213 |        1 | 0/11525870 | postgres
+(1 row)
+
+
+
+####################################
+# Add another node:
+
+# Install the repository RPM:
+sudo dnf install -y https://download.postgresql.org/pub/repos/yum/reporpms/EL-8-x86_64/pgdg-redhat-repo-latest.noarch.rpm
+# Disable the built-in PostgreSQL module:
+sudo dnf -qy module disable postgresql
+# Install PostgreSQL:
+sudo dnf install -y postgresql16-server
+
+# Optionally initialize the database and enable automatic start:
+#sudo /usr/pgsql-16/bin/postgresql-16-setup initdb
+sudo PGSETUP_INITDB_OPTIONS="-E UTF-8" /usr/pgsql-16/bin/postgresql-16-setup initdb
+
+vi /var/lib/pgsql/16/data/postgresql.conf
+ port = 3306
+
+# As root:
+vi $HOME/.bash_profile
+PATH=$PATH:$HOME/bin:/usr/pgsql-16/bin
+ alias pgd='sudo -iu postgres pgd'
+ alias psql='sudo -iu postgres psql'
+source $HOME/.bash_profile
+
+sudo systemctl enable postgresql-16
+sudo systemctl start postgresql-16
+
+export PGDATA=/var/lib/pgsql/16/data
+echo $PGDATA
+
+# Get IP from replica
+ip a
+10.128.136.58/21
+
+# Back on Primary
+# Update the pg_hba.conf file:
+echo -e "host replication replicator 10.128.136.58/21 md5" | sudo -u postgres tee -a /var/lib/pgsql/16/data/pg_hba.conf >/dev/null
+
+sudo -iu postgres pg_ctl -D $PGDATA reload
+ or
+sudo -iu postgres psql -U postgres -p 3306 -c "select pg_reload_conf()"
+
+############
+# Copy data to new replica
+
+# Get Primary IP address:
+ip a
+10.128.136.59/21
+
+# On Replica:
+systemctl stop postgresql-16
+rm -rf /var/lib/pgsql/16/data/*
+sudo -iu postgres pg_basebackup -h 10.128.136.59 -U replicator -p 3306 -D /var/lib/pgsql/16/data -Xs -R -P 
+Password:  replicator
+
+# standby.signal file will be empty:
+vi /var/lib/pgsql/16/data/standby.signal
+# In v16.4 recovery.conf no longer applies, so we use "standby.signal".
+ primary_conninfo = 'host=10.128.136.59 port=3306 user=replicator password=replicator'
+ restore_command = 'cp /opt/mysql/pg_archive/%f %p'
+ archive_cleanup_command = 'pg_archivecleanup /opt/mysql/pg_archive %r'
+
+vi /var/lib/pgsql/16/data/postgresql.conf
+ primary_conninfo = 'host=10.128.136.59 port=3306 user=replicator password=replicator' 
+
+mkdir /opt/mysql/pg_archive
+chown postgres:postgres /opt/mysql/pg_archive
+#chown postgres:postgres $PGDATA/recovery.conf
+
+############
+# Start restored replica env:
+sudo -iu postgres pg_ctl -D /var/lib/pgsql/16/data start
+systemctl start postgresql-16
+
+# Check replication:
+# On Primary:
+psql
+ select COUNT(*),SUM(value) from quicktest;
+ INSERT INTO quicktest (value) SELECT random()*10000 FROM generate_series(1,10000);
+ select COUNT(*),SUM(value) from quicktest;
+# check on Replica:
+ select COUNT(*),SUM(value) from quicktest;
+
+############
+# Monitoring:
+https://www.postgresql.org/docs/current/monitoring-ps.html
+
+# On replica node, PG log content:
+grep -i 'entering standby' $PGDATA/log/*
+
+# On Primary:
+psql -c "select pg_current_wal_lsn()"
+psql -Upostgres -hdbgsc-r-db-01 -c "select pg_current_wal_lsn()"
+
+
+postgres=# select pg_current_wal_lsn();
+ pg_current_wal_lsn
+--------------------
+ 0/1514A788
+
+(1 row)
+
+[root@dbgsc-r-db-01 ~]# ps auxww | grep ^postgres
+postgres   66992  0.0  0.6 289340 24952 ?        Ss   Aug29   0:01 /usr/pgsql-16/bin/postgres -D /var/lib/pgsql/16/data/
+postgres   66994  0.0  0.1 143492  6844 ?        Ss   Aug29   0:00 postgres: logger
+postgres   66997  0.0  0.2 289472  9976 ?        Ss   Aug29   0:00 postgres: checkpointer
+postgres   66998  0.0  0.2 289492  8588 ?        Ss   Aug29   0:00 postgres: background writer
+postgres   67000  0.0  0.3 289472 11572 ?        Ss   Aug29   0:00 postgres: walwriter
+postgres   67001  0.0  0.2 290932 10108 ?        Ss   Aug29   0:00 postgres: autovacuum launcher
+postgres   67002  0.0  0.2 289456  8124 ?        Ss   Aug29   0:00 postgres: archiver
+postgres   67003  0.0  0.2 290920  9012 ?        Ss   Aug29   0:00 postgres: logical replication launcher
+postgres   84157  0.0  0.3 291552 12372 ?        Ss   09:23   0:00 postgres: walsender replicator 10.128.136.60(38316) streaming 0/1114D778
+
+
+# On Replica:
+psql -c "select pg_last_wal_receive_lsn()"
+
+[root@dbgsc-r-db-02 pgsql]# postgres=# select pg_last_wal_receive_lsn();
+ pg_last_wal_receive_lsn
+-------------------------
+ 0/1514A788
+
+[root@dbgsc-r-db-02 pgsql]# ps auxww | grep ^postgres
+postgres   13449  0.0  0.6 289340 24992 ?        Ss   07:50   0:00 /usr/pgsql-16/bin/postgres -D /var/lib/pgsql/16/data
+postgres   13450  0.0  0.1 143492  5460 ?        Ss   07:50   0:00 postgres: logger
+postgres   13453  0.0  0.2 289472  8380 ?        Ss   07:50   0:00 postgres: checkpointer
+postgres   13454  0.0  0.1 289340  6048 ?        Ss   07:50   0:00 postgres: background writer
+postgres   13455  0.0  0.2 290092 10704 ?        Ss   07:50   0:00 postgres: startup recovering 000000010000000000000011
+postgres   13579  0.0  0.3 301220 12220 ?        Ss   09:23   0:00 postgres: walreceiver
+
+# Making it easier:
+psql -Upostgres -hdbgsc-r-db-01 -c "select pg_current_wal_lsn()"
+psql -Upostgres -hdbgsc-r-db-02 -c "select pg_last_wal_receive_lsn()"
+psql -Upostgres -hdbgsc-r-db-03 -c "select pg_last_wal_receive_lsn()"
+psql -x -hdbgsc-r-db-01 -c "select * from pg_stat_replication"
+
+# On Primary, create slot for new replica:
+SELECT * FROM pg_create_physical_replication_slot('node_b_slot');
+SELECT slot_name, slot_type, active FROM pg_replication_slots;
+
+# Tell Standby / replica to use it:
+alter system set primary_slot_name = 'node_b_slot';
+select pg_reload_conf();
+
+show primary_slot_name;
+ primary_slot_name
+-------------------
+ node_b_slot
+(1 row)
+
+
+# On relica tell it where to find the archived WALs:
+ALTER SYSTEM SET restore_command = 'cp /opt/mysql/pg_archive/%f %p';
+select pg_reload_conf();
+show restore_command;
+
+####
+# Check all replication status on Primary for both Replicas:
+psql
+\x
+select * from pg_stat_replication;
+
+postgres=# select * from pg_stat_replication;
+-[ RECORD 1 ]----+------------------------------
+pid              | 159414
+usesysid         | 16395
+usename          | replicator
+application_name | walreceiver
+client_addr      | 10.128.136.58
+client_hostname  |
+client_port      | 46236
+backend_start    | 2024-09-02 16:37:09.941088+00
+backend_xmin     |
+state            | streaming
+sent_lsn         | 0/1514A870
+write_lsn        | 0/1514A870
+flush_lsn        | 0/1514A870
+replay_lsn       | 0/1514A870
+write_lag        |
+flush_lag        |
+replay_lag       |
+sync_priority    | 0
+sync_state       | async
+reply_time       | 2024-09-02 16:46:33.119848+00
+-[ RECORD 2 ]----+------------------------------
+pid              | 159399
+usesysid         | 16395
+usename          | replicator
+application_name | walreceiver
+client_addr      | 10.128.136.60
+client_hostname  |
+client_port      | 48650
+backend_start    | 2024-09-02 16:36:19.170041+00
+backend_xmin     |
+state            | streaming
+sent_lsn         | 0/1514A870
+write_lsn        | 0/1514A870
+flush_lsn        | 0/1514A870
+replay_lsn       | 0/1514A870
+write_lag        |
+flush_lag        |
+replay_lag       |
+sync_priority    | 0
+sync_state       | async
+reply_time       | 2024-09-02 16:46:39.406374+00
+
+
+# On all replica nodes:
+
+# For versions < v14:
+psql -c "show transaction_read_only"
+psql -c "SHOW in_hot_standby"
+
+# Recovery status across nodes:
+https://www.postgresql.org/docs/current/functions-admin.html#FUNCTIONS-RECOVERY-INFO-TABLE
+
+
+# Set hostname to "client_hostname" appears in pg_stat_replication:
+psql -c "show log_hostname" -c "alter system set log_hostname=off" -c "select pg_reload_conf()"  -c "show log_hostname"
+psql -c "show log_hostname" -c "alter system set log_hostname=on" -c "select pg_reload_conf()" -c "show log_hostname"
+
+
+# primary_conninfo = 'host=dbgsc-r-db-01 hostaddr=10.128.136.59 port=3306 user=replicator password=replicator'
+primary_conninfo = 'host=10.128.136.59 port=3306 user=replicator password=replicator'

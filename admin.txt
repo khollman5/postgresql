@@ -1,0 +1,118 @@
+\dn *
+            List of schemas
+        Name        |       Owner
+--------------------+-------------------
+ information_schema | enterprisedb
+ pg_catalog         | enterprisedb
+ pg_temp_1          | enterprisedb
+ pg_toast           | enterprisedb
+ pg_toast_temp_1    | enterprisedb
+ public             | pg_database_owner
+ sys                | enterprisedb
+(7 rows)
+
+# \l
+                                                                List of databases
+   Name    |    Owner     | Encoding | Locale Provider |   Collate   |    Ctype    | ICU | ICU Locale | ICU Rules |       Access privileges
+-----------+--------------+----------+-----------------+-------------+-------------+-----+------------+-----------+-------------------------------
+ bdrdb     | enterprisedb | UTF8     | libc            | en_US.UTF-8 | en_US.UTF-8 |     |            |           |
+ edb       | enterprisedb | UTF8     | libc            | en_US.UTF-8 | en_US.UTF-8 |     |            |           |
+ postgres  | enterprisedb | UTF8     | libc            | en_US.UTF-8 | en_US.UTF-8 |     |            |           |
+ template0 | enterprisedb | UTF8     | libc            | en_US.UTF-8 | en_US.UTF-8 |     |            |           | =c/enterprisedb              +
+           |              |          |                 |             |             |     |            |           | enterprisedb=CTc/enterprisedb
+ template1 | enterprisedb | UTF8     | libc            | en_US.UTF-8 | en_US.UTF-8 |     |            |           | =c/enterprisedb              +
+           |              |          |                 |             |             |     |            |           | enterprisedb=CTc/enterprisedb
+(5 rows)
+
+SELECT d.datname as "Name",
+       pg_catalog.pg_get_userbyid(d.datdba) as "Owner",
+       pg_catalog.pg_encoding_to_char(d.encoding) as "Encoding",
+       d.datcollate as "Collate",
+       d.datctype as "Ctype",
+       pg_catalog.array_to_string(d.datacl, E'\n') AS "Access privileges"
+FROM pg_catalog.pg_database d
+ORDER BY 1;
+
+
+ \dt pg_catalog.pg_tablespace
+                 List of relations
+   Schema   |     Name      | Type  |    Owner
+------------+---------------+-------+--------------
+ pg_catalog | pg_tablespace | table | enterprisedb
+(1 row)
+
+
+\dt pg_catalog.*
+
+# \dt information_schema.*
+                          List of relations
+       Schema       |          Name           | Type  |    Owner
+--------------------+-------------------------+-------+--------------
+ information_schema | sql_features            | table | enterprisedb
+ information_schema | sql_implementation_info | table | enterprisedb
+ information_schema | sql_parts               | table | enterprisedb
+ information_schema | sql_sizing              | table | enterprisedb
+(4 rows)
+
+# \dt+ sys.*
+                                                      List of relations
+ Schema |                Name                 | Type  |    Owner     | Persistence | Access method |    Size    | Description
+--------+-------------------------------------+-------+--------------+-------------+---------------+------------+-------------
+ sys    | callback_queue_table                | table | enterprisedb | permanent   | heap          | 8192 bytes |
+ sys    | dual                                | table | enterprisedb | permanent   | heap          | 40 kB      |
+ sys    | edb$session_wait_history            | table | enterprisedb | permanent   | heap          | 8192 bytes |
+ sys    | edb$session_waits                   | table | enterprisedb | permanent   | heap          | 8192 bytes |
+ sys    | edb$snap                            | table | enterprisedb | permanent   | heap          | 8192 bytes |
+ sys    | edb$stat_all_indexes                | table | enterprisedb | permanent   | heap          | 0 bytes    |
+ sys    | edb$stat_all_tables                 | table | enterprisedb | permanent   | heap          | 0 bytes    |
+ sys    | edb$stat_database                   | table | enterprisedb | permanent   | heap          | 0 bytes    |
+ sys    | edb$statio_all_indexes              | table | enterprisedb | permanent   | heap          | 0 bytes    |
+ sys    | edb$statio_all_tables               | table | enterprisedb | permanent   | heap          | 0 bytes    |
+ sys    | edb$system_waits                    | table | enterprisedb | permanent   | heap          | 8192 bytes |
+ sys    | edb_dbms_redact_full_default_values | table | enterprisedb | permanent   | heap          | 8192 bytes |
+ sys    | plsql_profiler_rawdata              | table | enterprisedb | permanent   | heap          | 8192 bytes |
+ sys    | plsql_profiler_runs                 | table | enterprisedb | permanent   | heap          | 8192 bytes |
+ sys    | plsql_profiler_units                | table | enterprisedb | permanent   | heap          | 8192 bytes |
+ sys    | product_component_version           | table | enterprisedb | permanent   | heap          | 40 kB      |
+(16 rows)
+
+select * from sys.edb$session_waits ;
+ edb_id | dbname | backend_id | wait_name | wait_count | avg_wait_time | max_wait_time | total_wait_time | usename | query
+--------+--------+------------+-----------+------------+---------------+---------------+-----------------+---------+-------
+(0 rows)
+
+# \c sys \dt *.*
+
+#########
+# 
+\c bdrdb 
+create schema khtest_schema;
+create table khtest_schema.testtab (col1 varchar(10));
+insert into khtest_schema.testtab values ('12345');
+select * from khtest_schema.testtab ;
+SET search_path TO khtest_schema ;
+update testtab set col1='67890';
+select * from testtab ;
+
+vi /var/lib/pgsql/.pgsql_profile
+ PATH=$PATH:$HOME/bin:/usr/pgsql-16/bin
+ export PATH
+ 
+sudo -iu postgres pg_ctl status
+sudo -iu postgres pg_ctl -D /var/lib/pgsql/16/data restart -mf
+sudo -iu postgres pg_ctl -D /var/lib/pgsql/16/data reload
+sudo -iu postgres pg_ctl -D /var/lib/pgsql/16/data status
+
+sudo -iu postgres pg_ctl stop
+systemctl start postgresql-16.service
+# If this fails, check pg_hba.conf
+sudo -iu postgres pg_ctl -D /var/lib/pgsql/16/data start -mf
+
+sudo -iu postgres /usr/pgsql-16/bin/postgres "-c" "max_wal_senders=10" "-D" "/var/lib/pgsql/16/data"
+
+alter system set max_wal_senders=10 ;
+select pg_reload_conf();
+show max_wal_senders ;
+
+psql -c "alter user postgres with password 'secret'" -c "select pg_reload_conf()"
+

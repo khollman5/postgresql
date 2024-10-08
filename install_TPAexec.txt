@@ -1,0 +1,132 @@
+Token:
+190o7UWczQLGcIlIpcFiQcIL9mLtuGpk
+
+
+
+https://www.enterprisedb.com/docs/pgd/latest/deploy-config/deploy-manual/deploying/04-installing-software/
+
+
+1: Configuring repositories
+
+###########################
+# Template so we know that a token is required!
+
+
+curl -1sLf 'https://downloads.enterprisedb.com/190o7UWczQLGcIlIpcFiQcIL9mLtuGpk/enterprise/setup.rpm.sh' | sudo -E bash
+dnf install yum-utils 
+rpm --import 'https://downloads.enterprisedb.com/190o7UWczQLGcIlIpcFiQcIL9mLtuGpk/enterprise/gpg.E71EB0829F1EF813.key'
+curl -1sLf 'https://downloads.enterprisedb.com/190o7UWczQLGcIlIpcFiQcIL9mLtuGpk/enterprise/config.rpm.txt?distro=el&codename=9' > /tmp/enterprise.repo
+dnf config-manager --add-repo '/tmp/enterprise.repo'
+dnf -q makecache -y --disablerepo='*' --enablerepo='enterprisedb-enterprise'
+
+
+###########################
+# TPA Exec install:
+sudo yum install -y tpaexec
+
+# Install additional dependencies:
+sudo /opt/EDB/TPA/bin/tpaexec setup
+
+# Check:
+/opt/EDB/TPA/bin/tpaexec selftest
+
+vi ~/.bash_profile
+ PATH=$PATH:$HOME/bin:/opt/EDB/TPA/bin
+ EDB_SUBSCRIPTION_TOKEN=190o7UWczQLGcIlIpcFiQcIL9mLtuGpk
+ PYTHONPATH=/opt/EDB/TPA/lib
+
+ export PATH EDB_SUBSCRIPTION_TOKEN PYTHONPATH
+
+source .bash_profile
+
+###########################
+# Configure
+
+vi hostnames.txt
+dbgsc-r-db-01
+dbgsc-r-db-02
+dbgsc-r-db-03
+brman01
+
+tpaexec configure --architecture PGD-Always-ON --help
+tpaexec configure VLCPGD --architecture PGD-Always-ON --location-names VLC --data-nodes-per-location 3 --platform bare --hostnames-from hostnames.txt --bdr-database bdrdb --distribution RedHat --epas --postgres-version 16 --redwood --cohost-proxies --owner enterprisedb --pgd-proxy-routing global 
+
+tpaexec configure VLCPGD --architecture PGD-Always-ON --location-names VLC --data-nodes-per-location 3 --platform bare --hostnames-from hostnames.txt --bdr-database bdrdb --epas --postgres-version 16 --redwood --no-git --cohost-proxies --owner enterprisedb --pgd-proxy-routing global 
+
+cd VLCPGD
+vi config.yml
+
+..
+instance_defaults:
+  platform: bare
+  vars:
+    ansible_user: root
+    manage_ssh_hostkeys: yes
+
+instances:
+- Name: dbgsc-r-db-01
+  backup: dbgsc-r-db-02
+  location: VLC
+  node: 1
+  private_ip: 10.128.136.59
+  public_ip: 172.16.64.140
+  role:
+  - bdr
+  - pgd-proxy
+  vars:
+    bdr_child_group: vlc_subgroup
+    bdr_node_options:
+      route_priority: 100
+- Name: dbgsc-r-db-02
+  location: VLC
+  node: 2
+  private_ip: 10.128.136.60
+  public_ip: 172.16.64.139
+  role:
+  - bdr
+  - pgd-proxy
+  - barman
+  vars:
+    bdr_child_group: vlc_subgroup
+    bdr_node_options:
+      route_priority: 100
+- Name: dbgsc-r-db-03
+  location: VLC
+  node: 3
+  private_ip: 10.128.136.58
+  public_ip: 172.16.64.138
+  role:
+  - bdr
+  - pgd-proxy
+  vars:
+    bdr_child_group: vlc_subgroup
+    bdr_node_options:
+      route_priority: 100
+
+TASK [Generate the vault passphrase using keyring backend system] ********************************************************************************************************************************************
+fatal: [localhost]: FAILED! => {"changed": false, "cmd": ["/opt/EDB/TPA/architectures/lib/generate-vault", "/root/PGD/VLCPGD", "system", "57ba0b65-2e11-4bd2-8069-af2ed096cd2f"], "delta": "0:00:00.440296", "end": "2024-08-16 13:30:52.508753", "failed_when_result": true, "msg": "non-zero return code", "rc": 1, "start": "2024-08-16 13:30:52.068457", "stderr": "", "stderr_lines": [], "stdout": "Could not find compatible keyring backend,\nensure that you have a compatible backend for python keyring module\nor use keyring_backend: legacy in config.yml", "stdout_lines": ["Could not find compatible keyring backend,", "ensure that you have a compatible backend for python keyring module", "or use keyring_backend: legacy in config.yml"]}
+
+PLAY RECAP ***************************************************************************************************************************************************************************************************
+localhost                  : ok=39   changed=0    unreachable=0    failed=1    skipped=20   rescued=0    ignored=0
+
+
+####
+# Change keyring_backend parameter:
+
+vi VLCPGD/config.yml
+ ---
+ architecture: PGD-Always-ON
+ cluster_name: VLCPGD
+ cluster_tags: {}
+
+ keyring_backend: legacy
+ vault_name: 57ba0b65-2e11-4bd2-8069-af2ed096cd2f
+..
+
+tpaexec provision VLCPGD
+
+Lack of ssh connectivity across nodes = No TPAExec.
+
+
+
+
